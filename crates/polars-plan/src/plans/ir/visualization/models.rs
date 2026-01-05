@@ -287,7 +287,7 @@ impl FromWithArena<&SinkTypeIR> for SinkType {
             }),
             SinkTypeIR::File(f) => Self::File(FileSinkOptions {
                 target: (&f.target).into(),
-                file_format: f.file_format.as_ref().into(),
+                file_format: f.file_format.into(),
                 mkdir: f.unified_sink_args.mkdir,
                 maintain_order: f.unified_sink_args.maintain_order,
                 sync_on_close: f.unified_sink_args.sync_on_close,
@@ -296,7 +296,7 @@ impl FromWithArena<&SinkTypeIR> for SinkType {
                 base_path: p.base_path.clone(),
                 file_path_provider: (&p.file_path_provider).into(),
                 partition_strategy: (&p.partition_strategy).into_with_arena(expr_arena),
-                file_format: p.file_format.as_ref().into(),
+                file_format: p.file_format.into(),
                 mkdir: p.unified_sink_args.mkdir,
                 maintain_order: p.unified_sink_args.maintain_order,
                 sync_on_close: p.unified_sink_args.sync_on_close,
