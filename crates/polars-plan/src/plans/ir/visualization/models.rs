@@ -431,16 +431,16 @@ pub enum FileType {
     Parquet,
     Ipc,
     Csv,
-    Json,
+    NDJson,
 }
 
-impl From<&crate::dsl::FileType> for FileType {
-    fn from(value: &crate::dsl::FileType) -> Self {
+impl From<&crate::dsl::FileWriteFormat> for FileType {
+    fn from(value: &crate::dsl::FileWriteFormat) -> Self {
         match value {
-            crate::dsl::FileType::Parquet(_) => FileType::Parquet,
-            crate::dsl::FileType::Ipc(_) => FileType::Ipc,
-            crate::dsl::FileType::Csv(_) => FileType::Csv,
-            crate::dsl::FileType::Json(_) => FileType::Json,
+            crate::dsl::FileWriteFormat::Parquet(_) => FileType::Parquet,
+            crate::dsl::FileWriteFormat::Ipc(_) => FileType::Ipc,
+            crate::dsl::FileWriteFormat::Csv(_) => FileType::Csv,
+            crate::dsl::FileWriteFormat::NDJson(_) => FileType::NDJson,
         }
     }
 }
