@@ -26,7 +26,6 @@ mod record_batch_encoder;
 pub struct IpcWriterStarter {
     pub options: IpcWriterOptions,
     pub schema: SchemaRef,
-    pub num_pipelines: usize,
 }
 
 enum IpcBatch {
@@ -60,15 +59,15 @@ impl FileWriterStarter for IpcWriterStarter {
         &self,
         morsel_rx: connector::Receiver<SinkMorsel>,
         file: FileOpenTaskHandle,
+        num_pipelines: std::num::NonZeroUsize,
     ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<()>>> {
         let file_schema = Arc::clone(&self.schema);
-        let num_pipelines = self.num_pipelines;
         let options = self.options;
         let compression = self.options.compression.map(|x| x.into());
 
         let handle = async_executor::spawn(TaskPriority::High, async move {
             let (ipc_batch_tx, ipc_batch_rx) =
-                tokio::sync::mpsc::channel::<IpcBatch>(num_pipelines);
+                tokio::sync::mpsc::channel::<IpcBatch>(num_pipelines.get());
 
             let (arrow_converters, ipc_fields, dictionary_id_offsets) =
                 build_ipc_write_components(file_schema.as_ref(), options.compat_level);

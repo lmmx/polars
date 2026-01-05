@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 use futures::FutureExt;
 use polars_error::PolarsResult;
@@ -23,6 +23,7 @@ pub trait FileWriterStarter: Send + Sync + 'static {
         &self,
         morsel_rx: connector::Receiver<SinkMorsel>,
         file: FileOpenTaskHandle,
+        num_pipelines: NonZeroUsize,
     ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<()>>>;
 }
 

@@ -22,7 +22,6 @@ mod morsel_serializer;
 
 pub struct NDJsonWriterStarter {
     pub schema: SchemaRef,
-    pub num_pipelines: usize,
     pub initialized_state: std::sync::Mutex<Option<InitializedState>>,
 }
 
@@ -91,13 +90,14 @@ impl FileWriterStarter for NDJsonWriterStarter {
         &self,
         morsel_rx: connector::Receiver<SinkMorsel>,
         file: FileOpenTaskHandle,
+        num_pipelines: std::num::NonZeroUsize,
     ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<()>>> {
         let (filled_serializer_tx, filled_serializer_rx) = tokio::sync::mpsc::channel::<(
             async_executor::AbortOnDropHandle<PolarsResult<morsel_serializer::MorselSerializer>>,
             SinkMorselPermit,
-        )>(self.num_pipelines);
+        )>(num_pipelines.get());
 
-        let max_serializers = self.num_pipelines;
+        let max_serializers = num_pipelines.get();
         let (reuse_serializer_tx, reuse_serializer_rx) =
             tokio::sync::mpsc::channel::<morsel_serializer::MorselSerializer>(max_serializers);
 

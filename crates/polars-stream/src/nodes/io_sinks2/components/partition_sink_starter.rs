@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use polars_error::PolarsResult;
@@ -19,6 +20,7 @@ pub struct PartitionSinkStarter {
     pub file_provider: Arc<FileProvider>,
     pub writer_starter: Arc<dyn FileWriterStarter>,
     pub sync_on_close: SyncOnCloseType,
+    pub num_pipelines_per_sink: NonZeroUsize,
 }
 
 impl PartitionSinkStarter {
@@ -39,6 +41,7 @@ impl PartitionSinkStarter {
         let writer_handle = self.writer_starter.start_file_writer(
             morsel_rx,
             FileOpenTaskHandle::new(file_open_task, self.sync_on_close),
+            self.num_pipelines_per_sink,
         )?;
 
         let task_handle = async_executor::spawn(TaskPriority::High, async move {

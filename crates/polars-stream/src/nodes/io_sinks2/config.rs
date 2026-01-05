@@ -20,46 +20,39 @@ pub struct IOSinkNodeConfig {
 }
 
 impl IOSinkNodeConfig {
-    pub fn per_sink_num_pipelines(&self, num_pipelines: NonZeroUsize) -> usize {
-        usize::min(
-            num_pipelines.get(),
-            self.inflight_morsel_limit(num_pipelines),
-        )
+    pub fn num_pipelines_per_sink(&self, num_pipelines: NonZeroUsize) -> NonZeroUsize {
+        NonZeroUsize::min(num_pipelines, self.inflight_morsel_limit(num_pipelines))
     }
 
-    pub fn inflight_morsel_limit(&self, num_pipelines: NonZeroUsize) -> usize {
+    pub fn inflight_morsel_limit(&self, num_pipelines: NonZeroUsize) -> NonZeroUsize {
         if let Ok(v) = std::env::var("POLARS_INFLIGHT_SINK_MORSEL_LIMIT").map(|x| {
-            x.parse::<NonZeroUsize>()
-                .ok()
-                .unwrap_or_else(|| {
-                    panic!("invalid value for POLARS_INFLIGHT_SINK_MORSEL_LIMIT: {x}")
-                })
-                .get()
+            x.parse::<NonZeroUsize>().ok().unwrap_or_else(|| {
+                panic!("invalid value for POLARS_INFLIGHT_SINK_MORSEL_LIMIT: {x}")
+            })
         }) {
             return v;
         };
 
-        usize::saturating_add(
-            num_pipelines.get(),
+        NonZeroUsize::saturating_add(
+            num_pipelines,
             // Additional buffer to accommodate head-of-line blocking
             4,
         )
     }
 
-    pub fn max_open_sinks(&self) -> usize {
+    pub fn max_open_sinks(&self) -> NonZeroUsize {
         if let Ok(v) = std::env::var("POLARS_MAX_OPEN_SINKS").map(|x| {
             x.parse::<NonZeroUsize>()
                 .ok()
                 .unwrap_or_else(|| panic!("invalid value for POLARS_MAX_OPEN_SINKS: {x}"))
-                .get()
         }) {
             return v;
         }
 
         if self.target.is_cloud_location() {
-            512
+            const { NonZeroUsize::new(512).unwrap() }
         } else {
-            128
+            const { NonZeroUsize::new(128).unwrap() }
         }
     }
 

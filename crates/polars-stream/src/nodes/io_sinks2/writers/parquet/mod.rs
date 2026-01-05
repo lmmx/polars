@@ -28,7 +28,6 @@ pub struct ParquetWriterStarter {
     pub options: ParquetWriteOptions,
     pub arrow_schema: ArrowSchemaRef,
     pub initialized_state: std::sync::Mutex<Option<InitializedState>>,
-    pub num_pipelines: usize,
     pub row_group_size: Option<IdxSize>,
 }
 
@@ -78,6 +77,7 @@ impl FileWriterStarter for ParquetWriterStarter {
         &self,
         morsel_rx: connector::Receiver<SinkMorsel>,
         file: FileOpenTaskHandle,
+        num_pipelines: std::num::NonZeroUsize,
     ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<()>>> {
         let InitializedState {
             column_options,
@@ -105,7 +105,7 @@ impl FileWriterStarter for ParquetWriterStarter {
 
         let (encoded_row_group_tx, encoded_row_group_rx) = tokio::sync::mpsc::channel::<
             async_executor::AbortOnDropHandle<PolarsResult<EncodedRowGroup>>,
-        >(self.num_pipelines);
+        >(num_pipelines.get());
 
         let key_value_metadata = self.options.key_value_metadata.clone();
         let write_options = WriteOptions {
