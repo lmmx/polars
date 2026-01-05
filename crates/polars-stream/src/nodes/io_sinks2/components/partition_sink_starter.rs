@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use polars_error::PolarsResult;
 use polars_io::pl_async;
+use polars_io::utils::sync_on_close::SyncOnCloseType;
 use polars_plan::dsl::sink2::FileProviderArgs;
 
 use crate::async_executor;
@@ -10,13 +11,14 @@ use crate::nodes::TaskPriority;
 use crate::nodes::io_sinks2::components::file_provider::FileProvider;
 use crate::nodes::io_sinks2::components::file_sink::{FileSinkPermit, FileSinkTaskData};
 use crate::nodes::io_sinks2::components::size::RowCountAndSize;
-use crate::nodes::io_sinks2::writers::interface::FileWriterStarter;
+use crate::nodes::io_sinks2::writers::interface::{FileOpenTaskHandle, FileWriterStarter};
 use crate::utils::tokio_handle_ext;
 
 #[derive(Clone)]
 pub struct PartitionSinkStarter {
     pub file_provider: Arc<FileProvider>,
     pub writer_starter: Arc<dyn FileWriterStarter>,
+    pub sync_on_close: SyncOnCloseType,
 }
 
 impl PartitionSinkStarter {
@@ -34,9 +36,10 @@ impl PartitionSinkStarter {
 
         let (morsel_tx, morsel_rx) = connector::connector();
 
-        let writer_handle = self
-            .writer_starter
-            .start_file_writer(morsel_rx, file_open_task)?;
+        let writer_handle = self.writer_starter.start_file_writer(
+            morsel_rx,
+            FileOpenTaskHandle::new(file_open_task, self.sync_on_close),
+        )?;
 
         let task_handle = async_executor::spawn(TaskPriority::High, async move {
             writer_handle.await?;

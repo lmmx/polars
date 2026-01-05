@@ -17,15 +17,17 @@ pub struct IOSinkNodeConfig {
     pub target: IOSinkTarget,
     pub unified_sink_args: UnifiedSinkArgs,
     pub input_schema: SchemaRef,
-    pub num_pipelines: usize,
 }
 
 impl IOSinkNodeConfig {
-    pub fn per_sink_pipeline_depth(&self) -> usize {
-        self.inflight_morsel_limit().min(self.num_pipelines)
+    pub fn per_sink_num_pipelines(&self, num_pipelines: NonZeroUsize) -> usize {
+        usize::min(
+            num_pipelines.get(),
+            self.inflight_morsel_limit(num_pipelines),
+        )
     }
 
-    pub fn inflight_morsel_limit(&self) -> usize {
+    pub fn inflight_morsel_limit(&self, num_pipelines: NonZeroUsize) -> usize {
         if let Ok(v) = std::env::var("POLARS_INFLIGHT_SINK_MORSEL_LIMIT").map(|x| {
             x.parse::<NonZeroUsize>()
                 .ok()
@@ -37,7 +39,8 @@ impl IOSinkNodeConfig {
             return v;
         };
 
-        self.num_pipelines.saturating_add(
+        usize::saturating_add(
+            num_pipelines.get(),
             // Additional buffer to accommodate head-of-line blocking
             4,
         )

@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use polars_error::PolarsResult;
@@ -27,8 +28,10 @@ pub fn start_partition_sink_pipeline(
     config: IOSinkNodeConfig,
     execution_state: &StreamingExecutionState,
 ) -> PolarsResult<async_executor::AbortOnDropHandle<PolarsResult<()>>> {
-    let inflight_morsel_limit = config.inflight_morsel_limit();
-    let per_sink_pipeline_depth = config.per_sink_pipeline_depth();
+    let num_pipelines: NonZeroUsize = execution_state.num_pipelines.try_into().unwrap();
+
+    let inflight_morsel_limit = config.inflight_morsel_limit(num_pipelines);
+    let per_sink_num_pipelines = config.per_sink_num_pipelines(num_pipelines);
     let max_open_sinks = config.max_open_sinks();
     let upload_chunk_size = config.partitioned_cloud_upload_chunk_size();
 
@@ -43,7 +46,6 @@ pub fn start_partition_sink_pipeline(
                 cloud_options,
             },
         input_schema: _,
-        num_pipelines: _,
     } = config
     else {
         unreachable!()
@@ -71,12 +73,8 @@ pub fn start_partition_sink_pipeline(
         upload_chunk_size,
     });
 
-    let file_writer_starter: Arc<dyn FileWriterStarter> = create_file_writer_starter(
-        &file_format,
-        &file_schema,
-        per_sink_pipeline_depth,
-        sync_on_close,
-    )?;
+    let file_writer_starter: Arc<dyn FileWriterStarter> =
+        create_file_writer_starter(&file_format, &file_schema, per_sink_num_pipelines)?;
 
     let mut takeable_rows_provider = file_writer_starter.takeable_rows_provider();
 
@@ -134,6 +132,7 @@ pub fn start_partition_sink_pipeline(
     let partition_sink_starter = PartitionSinkStarter {
         file_provider,
         writer_starter: Arc::clone(&file_writer_starter),
+        sync_on_close,
     };
 
     let partition_morsel_sender = PartitionMorselSender {
