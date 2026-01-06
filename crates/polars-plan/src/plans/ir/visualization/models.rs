@@ -296,7 +296,7 @@ impl FromWithArena<&SinkTypeIR> for SinkType {
                 base_path: p.base_path.clone(),
                 file_path_provider: (&p.file_path_provider).into(),
                 partition_strategy: (&p.partition_strategy).into_with_arena(expr_arena),
-                file_format: p.file_format.into(),
+                file_format: (&p.file_format).into(),
                 mkdir: p.unified_sink_args.mkdir,
                 maintain_order: p.unified_sink_args.maintain_order,
                 sync_on_close: p.unified_sink_args.sync_on_close,
@@ -320,7 +320,7 @@ pub struct CallbackSinkType {
 #[derive(Clone, Debug, Hash, PartialEq)]
 pub struct FileSinkOptions {
     pub target: SinkTarget,
-    pub file_format: FileType,
+    pub file_format: FileFormat,
     pub mkdir: bool,
     pub maintain_order: bool,
     pub sync_on_close: SyncOnCloseType,
@@ -350,7 +350,7 @@ pub struct PartitionedSinkOptions {
     pub base_path: PlPath,
     pub file_path_provider: FileProviderType,
     pub partition_strategy: PartitionStrategy,
-    pub file_format: FileType,
+    pub file_format: FileFormat,
     pub mkdir: bool,
     pub maintain_order: bool,
     pub sync_on_close: SyncOnCloseType,
@@ -427,20 +427,20 @@ impl FromWithArena<&PartitionStrategyIR> for PartitionStrategy {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "ir_visualization_schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Hash, PartialEq)]
-pub enum FileType {
+pub enum FileFormat {
     Parquet,
     Ipc,
     Csv,
     NDJson,
 }
 
-impl From<&crate::dsl::FileWriteFormat> for FileType {
+impl From<&crate::dsl::FileWriteFormat> for FileFormat {
     fn from(value: &crate::dsl::FileWriteFormat) -> Self {
         match value {
-            crate::dsl::FileWriteFormat::Parquet(_) => FileType::Parquet,
-            crate::dsl::FileWriteFormat::Ipc(_) => FileType::Ipc,
-            crate::dsl::FileWriteFormat::Csv(_) => FileType::Csv,
-            crate::dsl::FileWriteFormat::NDJson(_) => FileType::NDJson,
+            crate::dsl::FileWriteFormat::Parquet(_) => FileFormat::Parquet,
+            crate::dsl::FileWriteFormat::Ipc(_) => FileFormat::Ipc,
+            crate::dsl::FileWriteFormat::Csv(_) => FileFormat::Csv,
+            crate::dsl::FileWriteFormat::NDJson(_) => FileFormat::NDJson,
         }
     }
 }
