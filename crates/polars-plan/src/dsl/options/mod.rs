@@ -356,7 +356,7 @@ impl FileType {
             #[cfg(feature = "parquet")]
             Self::Parquet(_) => "parquet",
             #[cfg(feature = "ipc")]
-            Self::Ipc(_) => "ipc",
+            Self::Ipc(_) => "arrow",
             #[cfg(feature = "csv")]
             Self::Csv(_) => "csv",
             #[cfg(feature = "json")]
