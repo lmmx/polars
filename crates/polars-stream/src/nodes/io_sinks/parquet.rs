@@ -141,6 +141,16 @@ impl SinkNode for ParquetSinkNode {
                 compression: write_options.compression.into(),
                 version: Version::V1,
                 data_page_size: write_options.data_page_size,
+                content_defined_chunking: {
+                    #[cfg(feature = "content_defined_chunking")]
+                    {
+                        write_options.content_defined_chunking
+                    }
+                    #[cfg(not(feature = "content_defined_chunking"))]
+                    {
+                        None
+                    }
+                },
             };
             let file_writer = Mutex::new(FileWriter::new_with_parquet_schema(
                 writer,
@@ -204,6 +214,16 @@ impl SinkNode for ParquetSinkNode {
             compression: write_options.compression.into(),
             version: Version::V1,
             data_page_size: write_options.data_page_size,
+            content_defined_chunking: {
+                #[cfg(feature = "content_defined_chunking")]
+                {
+                    write_options.content_defined_chunking
+                }
+                #[cfg(not(feature = "content_defined_chunking"))]
+                {
+                    None
+                }
+            },
         };
 
         // Buffer task.

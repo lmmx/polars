@@ -113,6 +113,16 @@ impl FileWriterStarter for ParquetWriterStarter {
             compression: self.options.compression.into(),
             version: Version::V1,
             data_page_size: self.options.data_page_size,
+            content_defined_chunking: {
+                #[cfg(feature = "content_defined_chunking")]
+                {
+                    self.options.content_defined_chunking
+                }
+                #[cfg(not(feature = "content_defined_chunking"))]
+                {
+                    None
+                }
+            },
         };
 
         let arrow_schema = Arc::clone(&self.arrow_schema);

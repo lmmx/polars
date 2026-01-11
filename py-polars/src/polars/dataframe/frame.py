@@ -3995,6 +3995,7 @@ class DataFrame:
         retries: int = 2,
         metadata: ParquetMetadata | None = None,
         mkdir: bool = False,
+        use_content_defined_chunking: bool | dict[str, int] | None = None,
     ) -> None:
         """
         Write to Apache Parquet file.
@@ -4093,6 +4094,19 @@ class DataFrame:
             .. warning::
                 This functionality is considered **unstable**. It may be changed at any
                 point without it being considered a breaking change.
+        use_content_defined_chunking
+            Enable content-defined chunking for efficient deduplication on
+            content-addressable storage systems (e.g. HuggingFace Hub).
+
+            - ``None`` or ``False``: Disabled (default) - use fixed-size pages
+            - ``True``: Enable with defaults (min=256KB, avg=512KB, max=1MB)
+            - ``dict``: Custom settings with optional keys:
+                - ``min_chunk_size``: Minimum chunk size in bytes
+                - ``avg_chunk_size``: Target average chunk size in bytes
+                - ``max_chunk_size``: Maximum chunk size in bytes
+
+            .. warning::
+                This is experimental and the API may change.
 
         Examples
         --------
@@ -4213,6 +4227,7 @@ class DataFrame:
             engine=engine,
             mkdir=mkdir,
             optimizations=QueryOptFlags._eager(),
+            use_content_defined_chunking=use_content_defined_chunking,
         )
 
     def write_database(

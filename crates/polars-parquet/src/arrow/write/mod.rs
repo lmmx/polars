@@ -29,6 +29,8 @@ use arrow::array::*;
 use arrow::bitmap::Bitmap;
 use arrow::datatypes::*;
 use arrow::types::{NativeType, days_ms, i256};
+#[cfg(feature = "content_defined_chunking")]
+use fastcdc::v2020::FastCDC;
 pub use nested::{num_values, write_rep_and_def};
 pub use pages::{to_leaves, to_nested, to_parquet_leaves};
 use polars_utils::float16::pf16;
@@ -75,6 +77,33 @@ impl Default for StatisticsOptions {
     }
 }
 
+/// Options for content-defined chunking of Parquet pages.
+///
+/// When enabled, page boundaries are determined by content hashing rather than
+/// fixed sizes, enabling efficient deduplication on content-addressable storage
+/// systems like HuggingFace Hub's Xet storage layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "dsl-schema", derive(schemars::JsonSchema))]
+pub struct ContentDefinedChunkingOptions {
+    /// Minimum chunk size in bytes.
+    pub min_size: usize,
+    /// Average/target chunk size in bytes.
+    pub avg_size: usize,
+    /// Maximum chunk size in bytes.
+    pub max_size: usize,
+}
+
+impl Default for ContentDefinedChunkingOptions {
+    fn default() -> Self {
+        Self {
+            min_size: 256 * 1024,  // 256 KiB
+            avg_size: 512 * 1024,  // 512 KiB
+            max_size: 1024 * 1024, // 1 MiB
+        }
+    }
+}
+
 /// Options to encode an array
 #[derive(Clone, Copy)]
 pub enum EncodeNullability {
@@ -93,6 +122,9 @@ pub struct WriteOptions {
     pub compression: CompressionOptions,
     /// The size to flush a page, defaults to 1024 * 1024 if None
     pub data_page_size: Option<usize>,
+    /// Content-defined chunking options. When Some, uses CDC for page boundaries.
+    /// When None, uses traditional fixed-size chunking.
+    pub content_defined_chunking: Option<ContentDefinedChunkingOptions>,
 }
 
 #[derive(Clone)]
@@ -394,23 +426,19 @@ pub fn array_to_pages(
     const DEFAULT_PAGE_SIZE: usize = 1024 * 1024;
     let max_page_size = options.data_page_size.unwrap_or(DEFAULT_PAGE_SIZE);
     let max_page_size = max_page_size.min(2usize.pow(31) - 2usize.pow(25)); // allowed maximum page size
-    let bytes_per_row = if number_of_rows == 0 {
-        0
-    } else {
-        ((byte_size as f64) / (number_of_rows as f64)) as usize
-    };
-    let rows_per_page = (max_page_size / (bytes_per_row + 1)).max(1);
 
-    let row_iter = (0..number_of_rows)
-        .step_by(rows_per_page)
-        .map(move |offset| {
-            let length = if offset + rows_per_page > number_of_rows {
-                number_of_rows - offset
-            } else {
-                rows_per_page
-            };
-            (offset, length)
-        });
+    // Compute row boundaries for pages
+    let row_iter: Box<dyn Iterator<Item = (usize, usize)> + Send + Sync> = {
+        #[cfg(feature = "content_defined_chunking")]
+        if let Some(cdc_options) = options.content_defined_chunking {
+            compute_cdc_row_iter(primitive_array, number_of_rows, byte_size, cdc_options)
+        } else {
+            compute_fixed_row_iter(number_of_rows, byte_size, max_page_size)
+        }
+
+        #[cfg(not(feature = "content_defined_chunking"))]
+        compute_fixed_row_iter(number_of_rows, byte_size, max_page_size)
+    };
 
     let primitive_array = primitive_array.to_boxed();
 
@@ -428,6 +456,230 @@ pub fn array_to_pages(
         )
     });
     Ok(DynIter::new(pages))
+}
+
+fn compute_fixed_row_iter(
+    number_of_rows: usize,
+    byte_size: usize,
+    max_page_size: usize,
+) -> Box<dyn Iterator<Item = (usize, usize)> + Send + Sync> {
+    let bytes_per_row = if number_of_rows == 0 {
+        0
+    } else {
+        ((byte_size as f64) / (number_of_rows as f64)) as usize
+    };
+    let rows_per_page = (max_page_size / (bytes_per_row + 1)).max(1);
+
+    Box::new(
+        (0..number_of_rows)
+            .step_by(rows_per_page)
+            .map(move |offset| {
+                let length = if offset + rows_per_page > number_of_rows {
+                    number_of_rows - offset
+                } else {
+                    rows_per_page
+                };
+                (offset, length)
+            }),
+    )
+}
+
+#[cfg(feature = "content_defined_chunking")]
+fn compute_cdc_row_iter(
+    array: &dyn Array,
+    number_of_rows: usize,
+    byte_size: usize,
+    cdc_options: ContentDefinedChunkingOptions,
+) -> Box<dyn Iterator<Item = (usize, usize)> + Send + Sync> {
+    if number_of_rows == 0 {
+        return Box::new(std::iter::empty());
+    }
+
+    // Get byte data for CDC analysis
+    let (data, bytes_per_element) = get_cdc_byte_data(array);
+
+    // If we couldn't get usable byte data, fall back to fixed-size estimation
+    let Some(data) = data else {
+        let bytes_per_row = ((byte_size as f64) / (number_of_rows as f64)) as usize;
+        let rows_per_page = (cdc_options.avg_size / (bytes_per_row + 1)).max(1);
+        return Box::new(
+            (0..number_of_rows)
+                .step_by(rows_per_page)
+                .map(move |offset| {
+                    let length = (offset + rows_per_page).min(number_of_rows) - offset;
+                    (offset, length)
+                }),
+        );
+    };
+
+    // Run FastCDC on the data
+    let chunker = FastCDC::new(
+        &data,
+        cdc_options.min_size as u32,
+        cdc_options.avg_size as u32,
+        cdc_options.max_size as u32,
+    );
+    let chunks: Vec<_> = chunker.collect();
+
+    if chunks.is_empty() {
+        return Box::new(std::iter::once((0, number_of_rows)));
+    }
+
+    // Convert byte boundaries to row boundaries
+    let row_boundaries = if let Some(elem_size) = bytes_per_element {
+        // Fixed-size elements: direct mapping
+        chunks
+            .into_iter()
+            .scan(0usize, move |current_row, chunk| {
+                let start_row = *current_row;
+                // Calculate how many rows this chunk covers
+                let chunk_end_byte = chunk.offset + chunk.length;
+                let end_row = (chunk_end_byte / elem_size).min(number_of_rows);
+                let length = end_row.saturating_sub(start_row);
+                *current_row = end_row;
+                if length > 0 {
+                    Some((start_row, length))
+                } else {
+                    None
+                }
+            })
+            .filter(|(_, len)| *len > 0)
+            .collect::<Vec<_>>()
+    } else {
+        // Variable-size elements: use chunk count to estimate row distribution
+        let rows_per_chunk = (number_of_rows + chunks.len() - 1) / chunks.len();
+        (0..chunks.len())
+            .map(|i| {
+                let start = i * rows_per_chunk;
+                let end = ((i + 1) * rows_per_chunk).min(number_of_rows);
+                (start, end - start)
+            })
+            .filter(|(_, len)| *len > 0)
+            .collect::<Vec<_>>()
+    };
+
+    // Ensure we cover all rows (handle rounding edge cases)
+    let mut result = row_boundaries;
+    if let Some(last) = result.last() {
+        let covered = last.0 + last.1;
+        if covered < number_of_rows {
+            result.push((covered, number_of_rows - covered));
+        }
+    } else {
+        result.push((0, number_of_rows));
+    }
+
+    Box::new(result.into_iter())
+}
+
+/// Extract byte data from an array for CDC analysis.
+/// Returns (Option<byte_data>, Option<bytes_per_element>).
+/// For fixed-size types, bytes_per_element is Some.
+/// For variable-size types, bytes_per_element is None.
+#[cfg(feature = "content_defined_chunking")]
+fn get_cdc_byte_data(array: &dyn Array) -> (Option<Vec<u8>>, Option<usize>) {
+    use arrow::datatypes::PhysicalType;
+
+    match array.dtype().to_physical_type() {
+        PhysicalType::Primitive(primitive_type) => {
+            use arrow::types::PrimitiveType;
+            let elem_size = match primitive_type {
+                PrimitiveType::Int8 | PrimitiveType::UInt8 => 1,
+                PrimitiveType::Int16 | PrimitiveType::UInt16 | PrimitiveType::Float16 => 2,
+                PrimitiveType::Int32 | PrimitiveType::UInt32 | PrimitiveType::Float32 => 4,
+                PrimitiveType::Int64 | PrimitiveType::UInt64 | PrimitiveType::Float64 => 8,
+                PrimitiveType::Int128 | PrimitiveType::UInt128 => 16,
+                PrimitiveType::Int256 => 32,
+                PrimitiveType::DaysMs | PrimitiveType::MonthDayMillis => 8,
+                PrimitiveType::MonthDayNano => 16,
+            };
+
+            // Get the raw values buffer
+            let buffers = array.as_any();
+
+            macro_rules! extract_primitive_bytes {
+                ($native_type:ty) => {{
+                    if let Some(arr) = buffers.downcast_ref::<PrimitiveArray<$native_type>>() {
+                        let values = arr.values();
+                        let bytes: &[u8] = bytemuck::cast_slice(values.as_slice());
+                        return (Some(bytes.to_vec()), Some(elem_size));
+                    }
+                }};
+            }
+
+            // Try common primitive types
+            extract_primitive_bytes!(i8);
+            extract_primitive_bytes!(i16);
+            extract_primitive_bytes!(i32);
+            extract_primitive_bytes!(i64);
+            extract_primitive_bytes!(i128);
+            extract_primitive_bytes!(u8);
+            extract_primitive_bytes!(u16);
+            extract_primitive_bytes!(u32);
+            extract_primitive_bytes!(u64);
+            extract_primitive_bytes!(u128);
+            extract_primitive_bytes!(f32);
+            extract_primitive_bytes!(f64);
+
+            (None, Some(elem_size))
+        },
+        PhysicalType::LargeBinary | PhysicalType::Binary => {
+            // For binary data, use the values buffer directly
+            if let Some(arr) = array.as_any().downcast_ref::<BinaryArray<i64>>() {
+                let values = arr.values();
+                return (Some(values.to_vec()), None);
+            }
+            if let Some(arr) = array.as_any().downcast_ref::<BinaryArray<i32>>() {
+                let values = arr.values();
+                return (Some(values.to_vec()), None);
+            }
+            (None, None)
+        },
+        PhysicalType::LargeUtf8 | PhysicalType::Utf8 => {
+            // Utf8 is stored the same as Binary
+            if let Some(arr) = array.as_any().downcast_ref::<Utf8Array<i64>>() {
+                let values = arr.values();
+                return (Some(values.to_vec()), None);
+            }
+            if let Some(arr) = array.as_any().downcast_ref::<Utf8Array<i32>>() {
+                let values = arr.values();
+                return (Some(values.to_vec()), None);
+            }
+            (None, None)
+        },
+        PhysicalType::BinaryView | PhysicalType::Utf8View => {
+            // BinaryView stores data in buffers; collect all buffer data
+            if let Some(arr) = array.as_any().downcast_ref::<BinaryViewArray>() {
+                let mut data = Vec::new();
+                for buffer in arr.data_buffers().iter() {
+                    data.extend_from_slice(buffer.as_slice());
+                }
+                if !data.is_empty() {
+                    return (Some(data), None);
+                }
+            }
+            (None, None)
+        },
+        PhysicalType::FixedSizeBinary => {
+            if let Some(arr) = array.as_any().downcast_ref::<FixedSizeBinaryArray>() {
+                let size = arr.size();
+                let values = arr.values();
+                return (Some(values.to_vec()), Some(size));
+            }
+            (None, None)
+        },
+        PhysicalType::Boolean => {
+            // Boolean arrays are bit-packed; use byte representation
+            if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
+                let values = arr.values();
+                let (bytes, _, _) = values.as_slice();
+                return (Some(bytes.to_vec()), None);
+            }
+            (None, None)
+        },
+        // For complex types, fall back to estimation-based chunking
+        _ => (None, None),
+    }
 }
 
 /// Converts an [`Array`] to a [`CompressedPage`] based on options, descriptor and `encoding`.
@@ -1254,4 +1506,52 @@ pub fn transverse<T, F: Fn(&ArrowDataType) -> T + Clone>(dtype: &ArrowDataType, 
     let mut encodings = vec![];
     transverse_recursive(dtype, map, &mut encodings);
     encodings
+}
+
+#[cfg(all(test, feature = "content_defined_chunking"))]
+mod cdc_tests {
+    use super::*;
+
+    #[test]
+    fn test_cdc_options_default() {
+        let opts = ContentDefinedChunkingOptions::default();
+        assert_eq!(opts.min_size, 256 * 1024);
+        assert_eq!(opts.avg_size, 512 * 1024);
+        assert_eq!(opts.max_size, 1024 * 1024);
+    }
+
+    #[test]
+    fn test_fixed_row_iter() {
+        let iter: Vec<_> = compute_fixed_row_iter(100, 1000, 100).collect();
+        assert!(!iter.is_empty());
+        // Verify all rows covered
+        let total: usize = iter.iter().map(|(_, len)| len).sum();
+        assert_eq!(total, 100);
+    }
+
+    #[test]
+    fn test_cdc_primitive_array() {
+        let values: Vec<i64> = (0..1000).collect();
+        let array = PrimitiveArray::from_vec(values);
+
+        let cdc_opts = ContentDefinedChunkingOptions {
+            min_size: 64,
+            avg_size: 128,
+            max_size: 256,
+        };
+
+        let iter: Vec<_> =
+            compute_cdc_row_iter(&array, array.len(), array.len() * 8, cdc_opts).collect();
+
+        // Verify all rows covered
+        let total: usize = iter.iter().map(|(_, len)| len).sum();
+        assert_eq!(total, 1000);
+
+        // Verify boundaries are valid
+        let mut expected_start = 0;
+        for (start, len) in &iter {
+            assert_eq!(*start, expected_start);
+            expected_start += len;
+        }
+    }
 }

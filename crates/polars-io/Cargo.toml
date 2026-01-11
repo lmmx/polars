@@ -137,6 +137,7 @@ temporal = ["dtype-datetime", "dtype-date", "dtype-time"]
 simd = []
 python = ["pyo3", "polars-error/python", "polars-utils/python"]
 allow_unused = []
+content_defined_chunking = ["parquet", "polars-parquet/content_defined_chunking"]
 
 [package.metadata.docs.rs]
 all-features = true

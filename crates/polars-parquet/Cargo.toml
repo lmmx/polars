@@ -18,6 +18,7 @@ base64 = { workspace = true }
 bytemuck = { workspace = true }
 ethnum = { workspace = true }
 fallible-streaming-iterator = { workspace = true, optional = true }
+fastcdc = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 hashbrown = { workspace = true }
 num-traits = { workspace = true }
@@ -68,6 +69,7 @@ lz4_flex = ["dep:lz4_flex"]
 
 async = ["async-stream", "futures", "polars-parquet-format/async"]
 bloom_filter = ["xxhash-rust"]
+content_defined_chunking = ["dep:fastcdc"]
 serde = ["dep:serde", "polars-utils/serde"]
 dsl-schema = ["dep:schemars"]
 simd = ["polars-compute/simd"]

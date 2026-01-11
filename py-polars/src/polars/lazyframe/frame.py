@@ -2612,6 +2612,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         engine: EngineType = "auto",
         metadata: ParquetMetadata | None = None,
         optimizations: QueryOptFlags = DEFAULT_QUERY_OPT_FLAGS,
+        use_content_defined_chunking: bool | dict[str, int] | None = None,
     ) -> None: ...
 
     @overload
@@ -2640,6 +2641,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         engine: EngineType = "auto",
         metadata: ParquetMetadata | None = None,
         optimizations: QueryOptFlags = DEFAULT_QUERY_OPT_FLAGS,
+        use_content_defined_chunking: bool | dict[str, int] | None = None,
     ) -> LazyFrame: ...
 
     def sink_parquet(
@@ -2667,6 +2669,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         | None = None,
         engine: EngineType = "auto",
         optimizations: QueryOptFlags = DEFAULT_QUERY_OPT_FLAGS,
+        use_content_defined_chunking: bool | dict[str, int] | None = None,
     ) -> LazyFrame | None:
         """
         Evaluate the query in streaming mode and write to a Parquet file.
@@ -2797,6 +2800,19 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             .. warning::
                 This functionality is considered **unstable**. It may be changed
                 at any point without it being considered a breaking change.
+        use_content_defined_chunking
+            Enable content-defined chunking for efficient deduplication on
+            content-addressable storage systems (e.g. HuggingFace Hub).
+
+            - ``None`` or ``False``: Disabled (default) - use fixed-size pages
+            - ``True``: Enable with defaults (min=256KB, avg=512KB, max=1MB)
+            - ``dict``: Custom settings with optional keys:
+                - ``min_chunk_size``: Minimum chunk size in bytes
+                - ``avg_chunk_size``: Target average chunk size in bytes
+                - ``max_chunk_size``: Maximum chunk size in bytes
+
+            .. warning::
+                This is experimental and the API may change.
 
         Returns
         -------
@@ -2916,6 +2932,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             data_page_size=data_page_size,
             metadata=metadata,
             field_overwrites=field_overwrites_dicts,
+            use_content_defined_chunking=use_content_defined_chunking,
         )
 
         if not lazy:

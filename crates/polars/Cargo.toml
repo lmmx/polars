@@ -91,6 +91,11 @@ parquet = [
   "polars-sql?/parquet",
   "new_streaming",
 ]
+content_defined_chunking = [
+  "parquet",
+  "polars-io/content_defined_chunking",
+  "polars-parquet/content_defined_chunking",
+]
 async = ["polars-lazy?/async"]
 cloud = ["polars-lazy?/cloud", "polars-io/cloud"]
 aws = ["async", "cloud", "polars-io/aws"]

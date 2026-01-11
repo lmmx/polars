@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use arrow::datatypes::PhysicalType;
 use polars_core::frame::chunk_df_for_writing;
 use polars_core::prelude::*;
+#[cfg(feature = "content_defined_chunking")]
+use polars_parquet::write::ContentDefinedChunkingOptions;
 use polars_parquet::write::{
     ChildWriteOptions, ColumnWriteOptions, CompressionOptions, Encoding, FieldWriteOptions,
     FileWriter, KeyValue, ListLikeFieldWriteOptions, StatisticsOptions, StructFieldWriteOptions,
@@ -21,12 +23,17 @@ impl ParquetWriteOptions {
     where
         F: Write,
     {
-        ParquetWriter::new(f)
+        let writer = ParquetWriter::new(f)
             .with_compression(self.compression)
             .with_statistics(self.statistics)
             .with_row_group_size(self.row_group_size)
             .with_data_page_size(self.data_page_size)
-            .with_key_value_metadata(self.key_value_metadata.clone())
+            .with_key_value_metadata(self.key_value_metadata.clone());
+
+        #[cfg(feature = "content_defined_chunking")]
+        let writer = writer.with_content_defined_chunking(self.content_defined_chunking);
+
+        writer
     }
 }
 
@@ -49,6 +56,10 @@ pub struct ParquetWriter<W> {
     key_value_metadata: Option<KeyValueMetadata>,
     /// Context info for the Parquet file being written.
     context_info: Option<PlHashMap<String, String>>,
+    /// Content-defined chunking options for efficient deduplication.
+    /// If `None`, uses traditional fixed-size page chunking.
+    #[cfg(feature = "content_defined_chunking")]
+    content_defined_chunking: Option<ContentDefinedChunkingOptions>,
 }
 
 impl<W> ParquetWriter<W>
@@ -70,6 +81,8 @@ where
             field_overwrites: Vec::new(),
             key_value_metadata: None,
             context_info: None,
+            #[cfg(feature = "content_defined_chunking")]
+            content_defined_chunking: None,
         }
     }
 
@@ -119,6 +132,16 @@ where
         self
     }
 
+    /// Set context-defined chunking options or else traditional fixed-size page chunking.
+    #[cfg(feature = "content_defined_chunking")]
+    pub fn with_content_defined_chunking(
+        mut self,
+        cdc: Option<ContentDefinedChunkingOptions>,
+    ) -> Self {
+        self.content_defined_chunking = cdc;
+        self
+    }
+
     pub fn batched(self, schema: &Schema) -> PolarsResult<BatchedWriter<W>> {
         let schema = schema_to_arrow_checked(schema, CompatLevel::newest(), "parquet")?;
         let column_options = get_column_write_options(&schema, &self.field_overwrites);
@@ -147,6 +170,16 @@ where
             compression: self.compression,
             version: Version::V1,
             data_page_size: self.data_page_size,
+            content_defined_chunking: {
+                #[cfg(feature = "content_defined_chunking")]
+                {
+                    self.content_defined_chunking
+                }
+                #[cfg(not(feature = "content_defined_chunking"))]
+                {
+                    None
+                }
+            },
         }
     }
 

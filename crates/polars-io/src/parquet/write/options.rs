@@ -1,3 +1,5 @@
+#[cfg(feature = "content_defined_chunking")]
+pub use polars_parquet::write::ContentDefinedChunkingOptions;
 use polars_parquet::write::{
     BrotliLevel, CompressionOptions, GzipLevel, StatisticsOptions, ZstdLevel,
 };
@@ -19,6 +21,10 @@ pub struct ParquetWriteOptions {
     pub row_group_size: Option<usize>,
     /// if `None` will be 1024^2 bytes
     pub data_page_size: Option<usize>,
+    /// Content-defined chunking options for efficient deduplication.
+    /// When `None`, uses traditional fixed-size page chunking.
+    #[cfg(feature = "content_defined_chunking")]
+    pub content_defined_chunking: Option<ContentDefinedChunkingOptions>,
     /// Custom file-level key value metadata
     pub key_value_metadata: Option<KeyValueMetadata>,
 

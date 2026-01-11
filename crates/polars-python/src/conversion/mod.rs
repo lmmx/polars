@@ -28,6 +28,8 @@ use polars_core::schema::iceberg::IcebergSchema;
 use polars_core::utils::arrow::array::Array;
 use polars_core::utils::materialize_dyn_int;
 use polars_lazy::prelude::*;
+#[cfg(feature = "content_defined_chunking")]
+use polars_parquet::write::ContentDefinedChunkingOptions;
 #[cfg(feature = "parquet")]
 use polars_parquet::write::StatisticsOptions;
 use polars_plan::dsl::ScanSources;
@@ -567,6 +569,71 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Wrap<StatisticsOptions> {
         }
 
         Ok(Wrap(statistics))
+    }
+}
+
+#[cfg(feature = "content_defined_chunking")]
+impl<'a, 'py> FromPyObject<'a, 'py> for Wrap<Option<ContentDefinedChunkingOptions>> {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        if ob.is_none() {
+            return Ok(Wrap(None));
+        }
+
+        // Try bool first
+        if let Ok(enabled) = ob.extract::<bool>() {
+            return Ok(Wrap(if enabled {
+                Some(ContentDefinedChunkingOptions::default())
+            } else {
+                None
+            }));
+        }
+
+        // Try dict
+        if let Ok(dict) = ob.cast::<PyDict>() {
+            let default = ContentDefinedChunkingOptions::default();
+
+            let min_size = dict
+                .get_item("min_chunk_size")?
+                .map(|v| v.extract::<usize>())
+                .transpose()?
+                .unwrap_or(default.min_size);
+
+            let avg_size = dict
+                .get_item("avg_chunk_size")?
+                .map(|v| v.extract::<usize>())
+                .transpose()?
+                .unwrap_or(default.avg_size);
+
+            let max_size = dict
+                .get_item("max_chunk_size")?
+                .map(|v| v.extract::<usize>())
+                .transpose()?
+                .unwrap_or(default.max_size);
+
+            // Validate constraints
+            if min_size > avg_size {
+                return Err(PyValueError::new_err(
+                    "min_chunk_size must be less than or equal to avg_chunk_size",
+                ));
+            }
+            if avg_size > max_size {
+                return Err(PyValueError::new_err(
+                    "avg_chunk_size must be less than or equal to max_chunk_size",
+                ));
+            }
+
+            return Ok(Wrap(Some(ContentDefinedChunkingOptions {
+                min_size,
+                avg_size,
+                max_size,
+            })));
+        }
+
+        Err(PyValueError::new_err(
+            "`use_content_defined_chunking` must be None, bool, or dict with 'min_chunk_size', 'avg_chunk_size', 'max_chunk_size' keys",
+        ))
     }
 }
 

@@ -10,6 +10,8 @@ use polars::time::*;
 use polars_core::prelude::*;
 #[cfg(feature = "parquet")]
 use polars_parquet::arrow::write::StatisticsOptions;
+#[cfg(feature = "content_defined_chunking")]
+use polars_parquet::write::ContentDefinedChunkingOptions;
 use polars_plan::dsl::ScanSources;
 use polars_plan::plans::{AExpr, HintIR, IR, Sorted};
 use polars_utils::arena::{Arena, Node};
@@ -691,7 +693,7 @@ impl PyLazyFrame {
     #[cfg(feature = "parquet")]
     #[pyo3(signature = (
         target, sink_options, compression, compression_level, statistics, row_group_size, data_page_size,
-        metadata, field_overwrites,
+        metadata, field_overwrites, use_content_defined_chunking,
     ))]
     fn sink_parquet(
         &self,
@@ -705,8 +707,29 @@ impl PyLazyFrame {
         data_page_size: Option<usize>,
         metadata: Wrap<Option<KeyValueMetadata>>,
         field_overwrites: Vec<Wrap<ParquetFieldOverwrites>>,
+        use_content_defined_chunking: Option<Py<PyAny>>,
     ) -> PyResult<PyLazyFrame> {
         let compression = parse_parquet_compression(compression, compression_level)?;
+
+        // Parse CDC options
+        #[cfg(feature = "content_defined_chunking")]
+        let content_defined_chunking = use_content_defined_chunking
+            .map(|obj| {
+                Python::attach(|py| {
+                    Wrap::<Option<ContentDefinedChunkingOptions>>::extract(
+                        obj.bind(py).as_borrowed(),
+                    )
+                })
+            })
+            .transpose()?
+            .and_then(|w| w.0);
+
+        #[cfg(not(feature = "content_defined_chunking"))]
+        if use_content_defined_chunking.is_some() {
+            return Err(PyValueError::new_err(
+                "content_defined_chunking feature is not enabled",
+            ));
+        }
 
         let options = ParquetWriteOptions {
             compression,
@@ -715,6 +738,8 @@ impl PyLazyFrame {
             data_page_size,
             key_value_metadata: metadata.0,
             field_overwrites: field_overwrites.into_iter().map(|f| f.0).collect(),
+            #[cfg(feature = "content_defined_chunking")]
+            content_defined_chunking,
         };
 
         let target = target.extract_file_sink_destination()?;
