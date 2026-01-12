@@ -49,6 +49,7 @@ parquet = [
   "polars-mem-engine/parquet",
   "polars-stream?/parquet",
 ]
+content_defined_chunking = ["polars-io/content_defined_chunking", "polars-stream?/content_defined_chunking"]
 async = [
   "polars-plan/async",
   "polars-io/cloud",
