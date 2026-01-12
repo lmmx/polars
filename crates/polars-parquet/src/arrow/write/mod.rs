@@ -704,7 +704,17 @@ fn get_cdc_byte_data(array: &dyn Array) -> (Option<Vec<u8>>, Option<usize>) {
             (None, None)
         },
         PhysicalType::BinaryView | PhysicalType::Utf8View => {
-            // BinaryView stores data in buffers; collect all buffer data
+            // Try Utf8ViewArray first (for Utf8View physical type)
+            if let Some(arr) = array.as_any().downcast_ref::<Utf8ViewArray>() {
+                let mut data = Vec::new();
+                for buffer in arr.data_buffers().iter() {
+                    data.extend_from_slice(buffer.as_slice());
+                }
+                if !data.is_empty() {
+                    return (Some(data), None);
+                }
+            }
+            // Try BinaryViewArray (for BinaryView physical type)
             if let Some(arr) = array.as_any().downcast_ref::<BinaryViewArray>() {
                 let mut data = Vec::new();
                 for buffer in arr.data_buffers().iter() {
