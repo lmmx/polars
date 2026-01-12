@@ -704,25 +704,18 @@ fn get_cdc_byte_data(array: &dyn Array) -> (Option<Vec<u8>>, Option<usize>) {
             (None, None)
         },
         PhysicalType::BinaryView | PhysicalType::Utf8View => {
-            // Try Utf8ViewArray first (for Utf8View physical type)
+            // For view arrays, use the VIEWS buffer (fixed 16 bytes per row),
+            // not the data buffers. This preserves row-to-byte correspondence.
             if let Some(arr) = array.as_any().downcast_ref::<Utf8ViewArray>() {
-                let mut data = Vec::new();
-                for buffer in arr.data_buffers().iter() {
-                    data.extend_from_slice(buffer.as_slice());
-                }
-                if !data.is_empty() {
-                    return (Some(data), None);
-                }
+                let views = arr.views();
+                // Views are u128, so 16 bytes each - cast to bytes
+                let bytes: &[u8] = bytemuck::cast_slice(views.as_slice());
+                return (Some(bytes.to_vec()), Some(16));
             }
-            // Try BinaryViewArray (for BinaryView physical type)
             if let Some(arr) = array.as_any().downcast_ref::<BinaryViewArray>() {
-                let mut data = Vec::new();
-                for buffer in arr.data_buffers().iter() {
-                    data.extend_from_slice(buffer.as_slice());
-                }
-                if !data.is_empty() {
-                    return (Some(data), None);
-                }
+                let views = arr.views();
+                let bytes: &[u8] = bytemuck::cast_slice(views.as_slice());
+                return (Some(bytes.to_vec()), Some(16));
             }
             (None, None)
         },
