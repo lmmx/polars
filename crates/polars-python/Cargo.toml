@@ -9,6 +9,7 @@ repository = { workspace = true }
 description = "Enable running Polars workloads in Python"
 
 [dependencies]
+polars-buffer = { workspace = true }
 polars-compute = { workspace = true }
 polars-core = { workspace = true, features = ["python"] }
 polars-dtype = { workspace = true }
@@ -145,7 +146,14 @@ parquet = ["polars/parquet", "polars-parquet", "polars-mem-engine/parquet"]
 ipc = ["polars/ipc", "polars-mem-engine/ipc"]
 ipc_streaming = ["polars/ipc_streaming"]
 is_in = ["polars/is_in"]
-json = ["polars/serde", "serde_json", "polars/json", "polars-utils/serde", "polars-mem-engine/json"]
+json = [
+  "polars/serde",
+  "polars-buffer/serde",
+  "serde_json",
+  "polars/json",
+  "polars-utils/serde",
+  "polars-mem-engine/json",
+]
 scan_lines = ["polars/scan_lines", "polars-mem-engine/scan_lines"]
 trigonometry = ["polars/trigonometry"]
 sign = ["polars/sign"]
@@ -175,6 +183,7 @@ list_filter = ["polars/list_filter"]
 list_gather = ["polars/list_gather"]
 list_count = ["polars/list_count"]
 array_count = ["polars/array_count", "polars/dtype-array"]
+array_gather = ["polars/array_gather", "polars/dtype-array"]
 binary_encoding = ["polars/binary_encoding"]
 list_sets = ["polars-lazy/list_sets"]
 list_any_all = ["polars/list_any_all"]
@@ -220,6 +229,7 @@ operations = [
   "approx_unique",
   "array_any_all",
   "array_count",
+  "array_gather",
   "bitwise",
   "is_in",
   "repeat_by",

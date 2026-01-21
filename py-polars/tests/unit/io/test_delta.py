@@ -1,28 +1,44 @@
 from __future__ import annotations
 
 import os
+import pickle
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
-import pyarrow.fs
 import pytest
 from deltalake import DeltaTable, write_deltalake
 from deltalake.exceptions import DeltaError, TableNotFoundError
 from deltalake.table import TableMerger
 
 import polars as pl
+from polars.io.cloud._utils import NoPickleOption
 from polars.io.cloud.credential_provider._builder import (
     _init_credential_provider_builder,
 )
+from polars.io.delta._dataset import DeltaDataset
 from polars.testing import assert_frame_equal, assert_frame_not_equal
 
 
 @pytest.fixture
 def delta_table_path(io_files_path: Path) -> Path:
     return io_files_path / "delta-table"
+
+
+def new_pl_delta_dataset(source: str | DeltaTable) -> DeltaDataset:
+    return DeltaDataset(
+        table_=NoPickleOption(source if isinstance(source, DeltaTable) else None),
+        table_uri_=source if not isinstance(source, DeltaTable) else None,
+        version=None,
+        storage_options=None,
+        credential_provider_builder=None,
+        delta_table_options=None,
+        use_pyarrow=False,
+        pyarrow_options=None,
+        rechunk=False,
+    )
 
 
 def test_scan_delta(delta_table_path: Path) -> None:
@@ -72,6 +88,24 @@ def test_scan_delta_columns(delta_table_path: Path) -> None:
 
     expected = pl.DataFrame({"name": ["Joey", "Ivan"]})
     assert_frame_equal(expected, ldf.collect(), check_dtypes=False)
+
+
+def test_scan_delta_polars_storage_options_keys(
+    delta_table_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("POLARS_VERBOSE_SENSITIVE", "1")
+    lf = pl.scan_delta(
+        delta_table_path,
+        version=0,
+        storage_options={"max_retries": 13, "file_cache_ttl": 37},
+    ).select("name")
+
+    lf.collect()
+
+    capture = capfd.readouterr().err
+    assert "max_retries: 13, file_cache_ttl: 37" in capture
 
 
 def test_scan_delta_relative(delta_table_path: Path) -> None:
@@ -229,6 +263,93 @@ def test_write_delta(df: pl.DataFrame, tmp_path: Path) -> None:
     assert sorted(df_supported.columns) == sorted(pl_df_partitioned.columns)
 
     df_supported.write_delta(partitioned_tbl_uri, mode="overwrite")
+
+
+@pytest.mark.write_disk
+def test_sink_delta(df: pl.DataFrame, tmp_path: Path) -> None:
+    v0 = df.lazy().select(pl.col(pl.String))
+    v1 = df.lazy().select(pl.col(pl.Int64))
+    df_supported = df.drop(["cat", "enum", "time"])
+
+    # Case: Success (version 0)
+    v0.sink_delta(tmp_path)
+
+    # Case: Error if table exists
+    with pytest.raises(DeltaError, match="A table already exists"):
+        v0.sink_delta(tmp_path)
+
+    # Case: Overwrite with new version (version 1)
+    v1.sink_delta(
+        tmp_path, mode="overwrite", delta_write_options={"schema_mode": "overwrite"}
+    )
+
+    # Case: Error if schema contains unsupported columns
+    with pytest.raises(TypeError):
+        df.lazy().sink_delta(
+            tmp_path, mode="overwrite", delta_write_options={"schema_mode": "overwrite"}
+        )
+
+    partitioned_tbl_uri = (tmp_path / ".." / "partitioned_table_sink").resolve()
+
+    # Case: Write new partitioned table (version 0)
+    df_supported.lazy().sink_delta(
+        partitioned_tbl_uri, delta_write_options={"partition_by": "strings"}
+    )
+
+    # Case: Read back
+    tbl = DeltaTable(tmp_path)
+    partitioned_tbl = DeltaTable(partitioned_tbl_uri)
+
+    pl_df_0 = pl.read_delta(tbl.table_uri, version=0)
+    pl_df_1 = pl.read_delta(tbl.table_uri, version=1)
+    pl_df_partitioned = pl.read_delta(partitioned_tbl_uri)
+
+    assert v0.collect().shape == pl_df_0.shape
+    assert v0.collect_schema().names() == pl_df_0.columns
+    assert v1.collect().shape == pl_df_1.shape
+    assert v1.collect_schema().names() == pl_df_1.columns
+
+    assert df_supported.shape == pl_df_partitioned.shape
+    assert sorted(df_supported.columns) == sorted(pl_df_partitioned.columns)
+
+    assert tbl.version() == 1
+    assert partitioned_tbl.version() == 0
+
+    uri = partitioned_tbl.table_uri.removeprefix("file://")
+    if os.name == "nt" and uri.startswith("/"):
+        uri = uri[1:]
+
+    assert Path(uri) == partitioned_tbl_uri
+    assert partitioned_tbl.metadata().partition_columns == ["strings"]
+
+    assert_frame_equal(v0.collect(), pl_df_0, check_row_order=False)
+    assert_frame_equal(v1.collect(), pl_df_1, check_row_order=False)
+
+    cols = [c for c in df_supported.columns if not c.startswith("list_")]
+    assert_frame_equal(
+        df_supported.select(cols),
+        pl_df_partitioned.select(cols),
+        check_row_order=False,
+    )
+
+    # Case: Append to existing tables
+    v1.sink_delta(tmp_path, mode="append")
+    tbl = DeltaTable(tmp_path)
+    pl_df_1 = pl.read_delta(tbl.table_uri, version=2)
+
+    assert tbl.version() == 2
+    assert pl_df_1.shape == (6, 2)  # Rows are doubled
+    assert v1.collect_schema().names() == pl_df_1.columns
+
+    df_supported.lazy().sink_delta(partitioned_tbl_uri, mode="append")
+    partitioned_tbl = DeltaTable(partitioned_tbl_uri)
+    pl_df_partitioned = pl.read_delta(partitioned_tbl.table_uri, version=1)
+
+    assert partitioned_tbl.version() == 1
+    assert pl_df_partitioned.shape == (6, 14)  # Rows are doubled
+    assert sorted(df_supported.columns) == sorted(pl_df_partitioned.columns)
+
+    df_supported.lazy().sink_delta(partitioned_tbl_uri, mode="overwrite")
 
 
 @pytest.mark.write_disk
@@ -672,7 +793,7 @@ def test_scan_delta_schema_evolution_nested_struct_field_19915(tmp_path: Path) -
 def test_scan_delta_storage_options_from_delta_table(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import polars.io.delta
+    import polars.io.delta._dataset
 
     storage_options_checked = False
 
@@ -692,7 +813,7 @@ def test_scan_delta_storage_options_from_delta_table(
         return pl.scan_parquet(*a, **kw)
 
     monkeypatch.setattr(
-        polars.io.delta, "scan_parquet", assert_scan_parquet_storage_options
+        polars.io.delta._dataset, "scan_parquet", assert_scan_parquet_storage_options
     )
 
     df = pl.DataFrame({"a": ["test"], "properties": [{"property_key": {"item": 1}}]})
@@ -761,7 +882,144 @@ endpoint_url = http://127.0.0.1:54321
     }
 
     with pytest.raises((DeltaError, OSError), match=r"http://127.0.0.1:54321"):
-        pl.scan_delta("s3://.../...")
+        pl.scan_delta("s3://.../...").collect()
 
     with pytest.raises((DeltaError, OSError), match=r"http://127.0.0.1:54321"):
         pl.DataFrame({"x": 1}).write_delta("s3://.../...", mode="append")
+
+
+@pytest.mark.parametrize("use_pyarrow", [True, False])
+@pytest.mark.write_disk
+def test_scan_delta_use_pyarrow(tmp_path: Path, use_pyarrow: bool) -> None:
+    df = pl.DataFrame({"year": [2025, 2026, 2026], "month": [0, 0, 0]})
+    df.write_delta(tmp_path, delta_write_options={"partition_by": "year"})
+
+    assert_frame_equal(
+        pl.scan_delta(tmp_path, use_pyarrow=use_pyarrow)
+        .filter(pl.col("year") == 2026)
+        .collect(),
+        pl.DataFrame({"year": [2026, 2026], "month": [0, 0]}),
+    )
+
+    assert_frame_equal(
+        pl.scan_delta(tmp_path, use_pyarrow=use_pyarrow)
+        .filter(pl.col("year") == 2026)
+        .head(1)
+        .collect(),
+        pl.DataFrame({"year": [2026], "month": [0]}),
+    )
+
+    # Delta does not have stable file scan ordering.
+    assert (
+        pl.scan_delta(tmp_path, use_pyarrow=use_pyarrow).head(1).collect().height == 1
+    )
+
+
+@pytest.mark.parametrize("use_pyarrow", [True, False])
+@pytest.mark.write_disk
+def test_scan_delta_use_pyarrow_single_file(tmp_path: Path, use_pyarrow: bool) -> None:
+    df = pl.DataFrame({"year": [2025, 2026, 2026], "month": [0, 0, 0]})
+    df.write_delta(tmp_path)
+
+    assert_frame_equal(
+        pl.scan_delta(tmp_path, use_pyarrow=use_pyarrow)
+        .filter(pl.col("year") == 2026)
+        .collect(),
+        pl.DataFrame({"year": [2026, 2026], "month": [0, 0]}),
+    )
+
+    assert_frame_equal(
+        pl.scan_delta(tmp_path, use_pyarrow=use_pyarrow)
+        .filter(pl.col("year") == 2026)
+        .head(1)
+        .collect(),
+        pl.DataFrame({"year": [2026], "month": [0]}),
+    )
+
+    assert_frame_equal(
+        pl.scan_delta(tmp_path, use_pyarrow=use_pyarrow).head(1).collect(),
+        pl.DataFrame({"year": [2025], "month": [0]}),
+    )
+
+    assert_frame_equal(
+        pl.scan_delta(tmp_path, use_pyarrow=use_pyarrow)
+        .head(1)
+        .filter(pl.col("year") == 2026)
+        .collect(),
+        pl.DataFrame(schema={"year": pl.Int64, "month": pl.Int64}),
+    )
+
+
+@pytest.mark.write_disk
+def test_delta_dataset_does_not_pickle_table_object(tmp_path: Path) -> None:
+    df = pl.DataFrame({"row_index": [0, 1, 2, 3, 4]})
+    df.write_delta(tmp_path)
+
+    dataset = new_pl_delta_dataset(DeltaTable(tmp_path))
+
+    assert dataset.table_.get() is not None
+    dataset = pickle.loads(pickle.dumps(dataset))
+    assert dataset.table_.get() is None
+
+    assert_frame_equal(dataset.to_dataset_scan()[0].collect(), df)  # type: ignore[index]
+
+
+@pytest.mark.parametrize("use_pyarrow", [True, False])
+@pytest.mark.write_disk
+def test_delta_partition_filter(tmp_path: Path, use_pyarrow: bool) -> None:
+    df = pl.DataFrame({"row_index": [0, 1, 2, 3, 4], "year": 2026})
+    df.write_delta(tmp_path, delta_write_options={"partition_by": "year"})
+
+    for path in DeltaTable(tmp_path).file_uris():
+        Path(path).unlink()
+
+    with pytest.raises((FileNotFoundError, OSError)):
+        pl.scan_delta(tmp_path, use_pyarrow=use_pyarrow).collect()
+
+    assert_frame_equal(
+        pl.scan_delta(tmp_path, use_pyarrow=use_pyarrow)
+        .filter(pl.col("year") < 0)
+        .collect(),
+        pl.DataFrame(schema=df.schema),
+    )
+
+
+@pytest.mark.write_disk
+@pytest.mark.parametrize("use_pyarrow", [True, False])
+def test_scan_delta_collect_without_version_scans_latest(
+    tmp_path: Path,
+    use_pyarrow: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    pl.DataFrame({"a": [0]}).write_delta(tmp_path)
+    table = DeltaTable(tmp_path)
+
+    q = pl.scan_delta(table, use_pyarrow=use_pyarrow)
+
+    assert_frame_equal(q.collect(), pl.DataFrame({"a": [0]}))
+
+    pl.DataFrame({"a": [1]}).write_delta(table, mode="append")
+
+    assert_frame_equal(q.collect().sort("*"), pl.DataFrame({"a": [0, 1]}))
+
+    version = table.version()
+
+    q_with_id = pl.scan_delta(table, use_pyarrow=use_pyarrow, version=version)
+
+    assert_frame_equal(q_with_id.collect().sort("*"), pl.DataFrame({"a": [0, 1]}))
+
+    pl.DataFrame({"a": [2]}).write_delta(table, mode="append")
+
+    assert_frame_equal(q.collect().sort("*"), pl.DataFrame({"a": [0, 1, 2]}))
+
+    monkeypatch.setenv("POLARS_VERBOSE", "1")
+    capfd.readouterr()
+
+    assert_frame_equal(q_with_id.collect().sort("*"), pl.DataFrame({"a": [0, 1]}))
+
+    capture = capfd.readouterr().err
+
+    assert (
+        "DeltaDataset: to_dataset_scan(): early return (version_key = '1')" in capture
+    )

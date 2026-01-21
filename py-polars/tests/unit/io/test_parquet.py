@@ -1005,8 +1005,9 @@ def test_hybrid_rle() -> None:
         literal_rle.append(np.repeat(i + 2, 15))
     literal_literal.append(np.random.randint(0, 10, size=2007))
     literal_rle.append(np.random.randint(0, 10, size=7))
-    literal_literal = np.concatenate(literal_literal)
-    literal_rle = np.concatenate(literal_rle)
+
+    literal_literal_flat = np.concatenate(literal_literal)
+    literal_rle_flat = np.concatenate(literal_rle)
     df = pl.DataFrame(
         {
             # Primitive types
@@ -1027,10 +1028,10 @@ def test_hybrid_rle() -> None:
             ),
             # Literal run that is not a multiple of 8 followed by consecutive
             # run initially long enough to RLE but not after padding literal
-            "literal_literal": literal_literal,
+            "literal_literal": literal_literal_flat,
             # Literal run that is not a multiple of 8 followed by consecutive
             # run long enough to RLE even after padding literal
-            "literal_rle": literal_rle,
+            "literal_rle": literal_rle_flat,
             # Final run not long enough to RLE
             "final_literal": np.concatenate(
                 [np.random.randint(0, 100, 10_000), np.repeat(-1, 7)]
@@ -3776,3 +3777,56 @@ def test_parquet_schema_correctness(
     f.seek(0)
     table = pq.read_table(f)
     assert table["a"].type == pa.struct([pa.field("f0", pa_dtype_nested or pa_dtype)])
+
+
+@pytest.mark.slow
+def test_parquet_is_in_pushdown_large_26007() -> None:
+    # Create parquet with large_string type and ZSTD compression.
+    df = pl.DataFrame(
+        {
+            "id": list(range(161877)),
+            "symbol": pl.Series([f"SYM{i:06d} VALUE" for i in range(161877)]),
+            "val": pl.Series([f"SYM{i:06d} VALUE" for i in range(161877)]),
+            "currency": ["USD"] * 161877,
+        }
+    )
+
+    buf = io.BytesIO()
+    df.write_parquet(buf, compression="zstd")
+    buf.seek(0)
+
+    # Large filter.
+    filter_keys = [f"SYM{i:06d} VALUE" for i in range(0, 161877, 100)] * 10
+
+    lf = pl.scan_parquet(buf)
+    result = lf.filter(pl.col("symbol").is_in(filter_keys)).collect()
+    expected = pl.DataFrame(
+        {
+            "id": list(range(0, 161877, 100)),
+            "symbol": pl.Series([f"SYM{i:06d} VALUE" for i in range(0, 161877, 100)]),
+            "val": pl.Series([f"SYM{i:06d} VALUE" for i in range(0, 161877, 100)]),
+            "currency": ["USD"] * (1 + 161877 // 100),
+        }
+    )
+    assert_frame_equal(result, expected)
+
+
+def test_parquet_ordered_cat_26174() -> None:
+    df_pandas = pd.DataFrame(
+        {
+            "dummy": pd.Categorical(
+                ["alpha", "beta", "gamma", "alpha", "delta", "beta", "gamma"],
+                ordered=True,
+            )
+        }
+    )
+    df_pandas.to_parquet(r"test.parquet", index=False)
+
+    df = pl.scan_parquet(r"test.parquet").collect()
+    assert_frame_equal(
+        df,
+        pl.DataFrame(
+            {"dummy": ["alpha", "beta", "gamma", "alpha", "delta", "beta", "gamma"]},
+            schema={"dummy": pl.Categorical},
+        ),
+    )

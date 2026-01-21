@@ -1,8 +1,8 @@
 use std::io::BufReader;
 use std::sync::LazyLock;
 
-use arrow::buffer::Buffer;
 use either::Either;
+use polars_buffer::Buffer;
 use polars_io::RowIndex;
 use polars_io::csv::read::streaming::read_until_start_and_infer_schema;
 #[cfg(feature = "cloud")]
@@ -58,7 +58,7 @@ pub(super) fn dsl_to_ir(
             FileScanDsl::PythonDataset { .. } => {
                 // There are a lot of places that short-circuit if the paths is empty,
                 // so we just give a dummy path here.
-                ScanSources::Paths(Buffer::from_iter([PlPath::from_str("dummy")]))
+                ScanSources::Paths(Buffer::from_iter([PlRefPath::new("PL_PY_DSET")]))
             },
             #[cfg(feature = "scan_lines")]
             FileScanDsl::Lines { .. } => sources.expand_paths(unified_scan_args)?,
@@ -82,7 +82,7 @@ pub(super) fn dsl_to_ir(
         }
 
         let hive_parts = if unified_scan_args.hive_options.enabled.unwrap()
-            && file_info.reader_schema.is_some()
+            && let Some(file_schema) = file_info.reader_schema.as_ref()
         {
             let paths = sources
                 .as_paths()
@@ -95,7 +95,7 @@ pub(super) fn dsl_to_ir(
                 paths,
                 unified_scan_args.hive_options.hive_start_idx,
                 unified_scan_args.hive_options.schema.clone(),
-                match file_info.reader_schema.as_ref().unwrap() {
+                match file_schema {
                     Either::Left(v) => {
                         owned = Some(Schema::from_arrow_schema(v.as_ref()));
                         owned.as_ref().unwrap()
@@ -131,9 +131,9 @@ pub(super) fn dsl_to_ir(
             schema.insert_at_index(schema.len(), file_path_col.clone(), DataType::String)?;
         }
 
-        unified_scan_args.projection = if file_info.reader_schema.is_some() {
+        unified_scan_args.projection = if let Some(file_schema) = file_info.reader_schema.as_ref() {
             maybe_init_projection_excluding_hive(
-                file_info.reader_schema.as_ref().unwrap(),
+                file_schema,
                 hive_parts.as_ref().map(|h| h.schema()),
             )
         } else {
@@ -233,7 +233,8 @@ pub(super) fn parquet_file_info(
             feature_gated!("cloud", {
                 get_runtime().block_in_place_on(async {
                     let mut reader =
-                        ParquetObjectStore::from_uri(first_path, cloud_options, None).await?;
+                        ParquetObjectStore::from_uri(first_path.clone(), cloud_options, None)
+                            .await?;
 
                     PolarsResult::Ok((
                         reader.schema().await?,
@@ -289,23 +290,23 @@ pub(super) fn ipc_file_info(
     cloud_options: Option<&polars_io::cloud::CloudOptions>,
 ) -> PolarsResult<(FileInfo, arrow::io::ipc::read::FileMetadata)> {
     use polars_core::error::feature_gated;
-    use polars_utils::plpath::PlPathRef;
 
     let metadata = match first_scan_source {
-        ScanSourceRef::Path(path) => match path {
-            PlPathRef::Cloud(_) => {
+        ScanSourceRef::Path(path) => {
+            if path.has_scheme() {
                 feature_gated!("cloud", {
                     get_runtime().block_on(async {
-                        polars_io::ipc::IpcReaderAsync::from_uri(path, cloud_options)
+                        polars_io::ipc::IpcReaderAsync::from_uri(path.clone(), cloud_options)
                             .await?
                             .metadata()
                             .await
                     })?
                 })
-            },
-            PlPathRef::Local(path) => arrow::io::ipc::read::read_file_metadata(
-                &mut std::io::BufReader::new(polars_utils::open_file(path)?),
-            )?,
+            } else {
+                arrow::io::ipc::read::read_file_metadata(&mut std::io::BufReader::new(
+                    polars_utils::open_file(path.as_std_path())?,
+                ))?
+            }
         },
         ScanSourceRef::File(file) => {
             arrow::io::ipc::read::read_file_metadata(&mut std::io::BufReader::new(file))?
@@ -353,11 +354,7 @@ pub fn csv_file_info(
         if run_async {
             feature_gated!("cloud", {
                 Some(polars_io::file_cache::init_entries_from_uri_list(
-                    sources
-                        .as_paths()
-                        .unwrap()
-                        .iter()
-                        .map(|path| Arc::from(path.to_str())),
+                    sources.as_paths().unwrap().iter().cloned(),
                     cloud_options,
                 )?)
             })
@@ -396,7 +393,7 @@ pub fn csv_file_info(
                     (_, true) => Ok((schema_a, row_estimate_a)),
                     _ => {
                         schema_a.to_supertype(&schema_b)?;
-                        Ok((schema_a, row_estimate_a + row_estimate_b))
+                        Ok((schema_a, row_estimate_a.saturating_add(row_estimate_b)))
                     },
                 }
             },
@@ -454,11 +451,7 @@ pub fn ndjson_file_info(
         if run_async {
             feature_gated!("cloud", {
                 Some(polars_io::file_cache::init_entries_from_uri_list(
-                    sources
-                        .as_paths()
-                        .unwrap()
-                        .iter()
-                        .map(|path| Arc::from(path.to_str())),
+                    sources.as_paths().unwrap().iter().cloned(),
                     cloud_options,
                 )?)
             })
@@ -501,11 +494,11 @@ pub fn ndjson_file_info(
 #[derive(Eq, Hash, PartialEq)]
 enum CachedSourceKey {
     ParquetIpc {
-        first_path: PlPath,
+        first_path: PlRefPath,
         schema_overwrite: Option<SchemaRef>,
     },
     CsvJson {
-        paths: Buffer<PlPath>,
+        paths: Buffer<PlRefPath>,
         schema: Option<SchemaRef>,
         schema_overwrite: Option<SchemaRef>,
     },
